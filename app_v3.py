@@ -395,26 +395,26 @@ with tab1:
                 step=1, value=0, key="qp"
             )
             pic_p = st.text_input("担当者名", placeholder="例: 山田 太郎", key="pp")
-
-            col_cp, col_op = st.columns(2)
-            with col_cp:
-                city_p_input = st.text_input(
-                    "市町村名",
-                    value=st.session_state.point_city,
-                    placeholder="例: 大津市",
-                    key="city_p_input",
-                    help="字界データから自動取得。未取得時は手入力してください。",
-                )
-            with col_op:
-                oaza_p_input = st.text_input(
-                    "大字名",
-                    value=st.session_state.point_oaza,
-                    placeholder="例: 唐崎",
-                    key="oaza_p_input",
-                    help="字界データから自動取得。未取得時は手入力してください。",
-                )
-
             submit_p = st.form_submit_button("📌 定点配布を登録する", type="primary")
+
+        # ---- 市町村名・大字名はフォームの外で管理（form内ではvalue反映されないため）----
+        col_cp, col_op = st.columns(2)
+        with col_cp:
+            city_p_input = st.text_input(
+                "市町村名",
+                value=st.session_state.point_city,
+                placeholder="例: 大津市",
+                key="city_p_input",
+                help="字界データから自動取得。未取得時は手入力してください。",
+            )
+        with col_op:
+            oaza_p_input = st.text_input(
+                "大字名",
+                value=st.session_state.point_oaza,
+                placeholder="例: 唐崎",
+                key="oaza_p_input",
+                help="字界データから自動取得。未取得時は手入力してください。",
+            )
 
         if submit_p:
             errors = []
@@ -555,26 +555,26 @@ with tab2:
                 step=1, value=0, key="qa"
             )
             pic_a = st.text_input("担当者名", placeholder="例: 鈴木 花子", key="pa")
-
-            col_ca, col_oa = st.columns(2)
-            with col_ca:
-                city_a_input = st.text_input(
-                    "市町村名",
-                    value=st.session_state.polygon_city,
-                    placeholder="例: 大津市",
-                    key="city_a_input",
-                    help="字界データから自動取得。未取得時は手入力してください。",
-                )
-            with col_oa:
-                oaza_a_input = st.text_input(
-                    "大字名",
-                    value=st.session_state.polygon_oaza,
-                    placeholder="例: 唐崎",
-                    key="oaza_a_input",
-                    help="字界データから自動取得。未取得時は手入力してください。",
-                )
-
             submit_a = st.form_submit_button("🏘 戸別配布を登録する", type="primary")
+
+        # ---- 市町村名・大字名はフォームの外で管理（form内ではvalue反映されないため）----
+        col_ca, col_oa = st.columns(2)
+        with col_ca:
+            city_a_input = st.text_input(
+                "市町村名",
+                value=st.session_state.polygon_city,
+                placeholder="例: 大津市",
+                key="city_a_input",
+                help="字界データから自動取得。未取得時は手入力してください。",
+            )
+        with col_oa:
+            oaza_a_input = st.text_input(
+                "大字名",
+                value=st.session_state.polygon_oaza,
+                placeholder="例: 唐崎",
+                key="oaza_a_input",
+                help="字界データから自動取得。未取得時は手入力してください。",
+            )
 
         if submit_a:
             errors = []
