@@ -79,7 +79,7 @@ def load_oaza_bounds(_supabase) -> list[dict]:
     """
     try:
         res = _supabase.table("oaza_bounds") \
-            .select("id, city_name, oaza_name, geom") \
+            .select("id, city_name, s_name, geom") \
             .execute()
         return res.data or []
     except Exception as e:
@@ -108,7 +108,7 @@ def find_oaza_by_point(lon: float, lat: float,
                     geom_dict = geom_raw
                 polygon = shape(geom_dict)
                 if polygon.contains(pt):
-                    return row.get("city_name", ""), row.get("oaza_name", "")
+                    return row.get("city_name", ""), row.get("s_name", "")
             except Exception:
                 continue
     except ImportError:
