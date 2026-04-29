@@ -1,7 +1,6 @@
 """
-広報活動 データ登録アプリ V3.0
-Streamlit + Folium(Draw) + Shapely + Supabase
-地図上でポイント・ポリゴンを描画して登録
+広報活動 データ登録アプリ V8.0 (前半)
+V5.0詳細機能 ＋ 拠点別ログイン 融合版
 """
 
 import streamlit as st
@@ -15,735 +14,326 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# --- スタイル設定 (V5.0継承) ---
 st.markdown("""
 <style>
-  html, body, [class*="css"] {
-    font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif;
-  }
-  .app-title {
-    font-size: 1.5rem; font-weight: 800;
-    color: #1a472a; letter-spacing: 0.04em;
-    padding: 0.8rem 0 0.2rem;
-  }
+  html, body, [class*="css"] { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; }
+  .app-title { font-size: 1.5rem; font-weight: 800; color: #1a472a; padding: 0.8rem 0 0.2rem; }
   .app-subtitle { font-size: 0.85rem; color: #666; margin-bottom: 1.2rem; }
-  .login-box {
-    background: #f4faf6; border: 1.5px solid #2d6a4f;
-    border-radius: 16px; padding: 2rem 1.5rem 1.5rem;
-    margin: 3rem auto; max-width: 360px;
-  }
-  .stButton > button {
-    width: 100%; height: 2.8rem; font-size: 1rem;
-    font-weight: 700; border-radius: 10px;
-  }
-  .geo-badge {
-    background: #E8F4FD; border: 1.5px solid #1565C0;
-    border-radius: 10px; padding: 0.6rem 1rem;
-    font-size: 0.9rem; line-height: 1.8; margin: 0.5rem 0;
-    color: #0D47A1;
-  }
-  .success-card {
-    background: #f0faf4; border: 1.5px solid #2d6a4f;
-    border-radius: 10px; padding: 0.8rem 1.2rem;
-    font-size: 0.9rem; line-height: 1.8; margin: 0.5rem 0;
-  }
-  .hint { color: #888; font-size: 0.8rem; margin-bottom: 0.5rem; }
+  .login-box { background: #f4faf6; border: 1.5px solid #2d6a4f; border-radius: 16px; padding: 2rem; margin: 3rem auto; max-width: 360px; }
+  .geo-badge { background: #E8F4FD; border: 1.5px solid #1565C0; border-radius: 10px; padding: 0.6rem 1rem; font-size: 0.9rem; color: #0D47A1; margin: 0.5rem 0; }
+  .alarm-card { border: 2px solid #d00000; background: #fff5f5; padding: 10px; border-radius: 8px; color: #d00000; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
+# ============================================================
+# 基本設定・関数
+# ============================================================
+DEFAULT_CENTER = [35.0116, 135.8514]
+LOCATION_MAP = {
+    "siga1": [35.0182, 135.8550], "siga2": [35.1283, 136.1031],
+    "siga3": [35.0549, 135.9458], "siga4": [35.0182, 135.8550], "siga5": [35.0182, 135.8550],
+}
 
-# ============================================================
-# Supabase クライアント
-# ============================================================
 @st.cache_resource
 def get_supabase():
     try:
         from supabase import create_client
-        return create_client(
-            st.secrets["SUPABASE_URL"],
-            st.secrets["SUPABASE_KEY"]
-        )
+        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     except Exception as e:
-        st.error(f"DB接続エラー: {e}")
-        return None
+        st.error(f"DB接続エラー: {e}"); return None
 
-
-# ============================================================
-# 大字キャッシュ（全件取得・shapely判定）
-# ============================================================
-@st.cache_data(ttl=600, show_spinner="字界データを読み込み中...")
-def load_oaza_bounds(_supabase) -> list[dict]:
-    """
-    oaza_boundsを全件取得してキャッシュする。
-    geomカラムはGeoJSON文字列またはPostGIS形式で返ってくる想定。
-    TTL=600秒（10分）でキャッシュ更新。
-    """
+def find_oaza_by_point(lon, lat, _supabase):
+    if not _supabase: return "", ""
     try:
-        res = _supabase.table("oaza_bounds") \
-            .select("id, city_name, s_name, geom") \
-            .execute()
-        return res.data or []
-    except Exception as e:
-        st.warning(f"字界データ取得エラー: {e}")
-        return []
-
-
-def find_oaza_by_point(lon: float, lat: float,
-                       oaza_list: list[dict]) -> tuple[str, str]:
-    """
-    shapely を使って Point in Polygon 判定を行い
-    （市町村名, 大字名）を返す。見つからない場合は ("", "")。
-    """
-    try:
-        from shapely.geometry import Point, shape
-
-        pt = Point(lon, lat)
-        for row in oaza_list:
-            geom_raw = row.get("geom")
-            if not geom_raw:
-                continue
-            try:
-                if isinstance(geom_raw, str):
-                    geom_dict = json.loads(geom_raw)
-                else:
-                    geom_dict = geom_raw
-                polygon = shape(geom_dict)
-                if polygon.contains(pt):
-                    return row.get("city_name", ""), row.get("s_name", "")
-            except Exception:
-                continue
-    except ImportError:
-        st.error("shapely がインストールされていません。requirements.txt を確認してください。")
+        res = _supabase.rpc("get_address_from_point", {"lng": lon, "lat": lat}).execute()
+        if res.data: return res.data[0].get("city", ""), res.data[0].get("oaza", "")
+    except Exception: pass
     return "", ""
 
-
-def calc_centroid(geojson_dict: dict) -> tuple[float, float] | None:
-    """
-    ポリゴンのGeoJSONから重心（lon, lat）を返す。
-    """
+def calc_centroid(geojson_dict):
     try:
         from shapely.geometry import shape
-        polygon = shape(geojson_dict)
-        c = polygon.centroid
+        c = shape(geojson_dict).centroid
         return c.x, c.y
-    except Exception:
-        return None
-
+    except Exception: return None
 
 # ============================================================
-# 地図ユーティリティ
+# 地図生成 (レイヤー名日本語化 ＆ 安定版)
 # ============================================================
+# 地理院タイルの設定
+MAP_TILES = "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png"
+PHOTO_TILES = "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg"
+MAP_ATTR  = "国土地理院"
 
-# 大津駅を地図の中心に設定
-MAP_CENTER = [35.0116, 135.8514]
-MAP_ZOOM   = 14
-MAP_TILES  = "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png"
-MAP_ATTR   = "国土地理院"
-
-
-def make_point_map(center: list[float] | None = None):
-    """定点入力用 folium マップ（Markerのみ描画可）"""
+def make_base_map(draw_opts):
     import folium
     from folium.plugins import Draw
-
-    m = folium.Map(
-        location=center or MAP_CENTER,
-        zoom_start=MAP_ZOOM,
-        tiles=MAP_TILES,
-        attr=MAP_ATTR,
-    )
-    Draw(
-        draw_options={
-            "polyline": False, "polygon": False,
-            "rectangle": False, "circle": False,
-            "circlemarker": False, "marker": True,
-        },
-        edit_options={"edit": False},
+    center = st.session_state.get("map_center", DEFAULT_CENTER)
+    
+    # 最初の tiles を None にして、自分で TileLayer を追加することで名前を固定します
+    m = folium.Map(location=center, zoom_start=15, tiles=None)
+    
+    # 標準地形図の追加
+    folium.TileLayer(
+        tiles=MAP_TILES, attr=MAP_ATTR, name="地形図", 
+        control=True, overlay=False
     ).add_to(m)
+    
+    # 航空写真の追加
+    folium.TileLayer(
+        tiles=PHOTO_TILES, attr=MAP_ATTR, name="航空写真", 
+        control=True, overlay=False, show=False
+    ).add_to(m)
+    
+    folium.LayerControl(collapsed=False).add_to(m)
+    Draw(draw_options=draw_opts, edit_options={"edit": True}).add_to(m)
     return m
 
-
-def make_polygon_map(center: list[float] | None = None):
-    """戸別配布入力用 folium マップ（Polygonのみ描画可）"""
+# ============================================================
+# 履歴用マップ生成 (完全ネイティブ・スクロール保持版)
+# ============================================================
+def make_review_map(points, polygons):
     import folium
-    from folium.plugins import Draw
+    
+    # 拠点に合わせて中心を移動
+    center = st.session_state.get("map_center", DEFAULT_CENTER)
+    m = folium.Map(location=center, zoom_start=13, tiles=None)
 
-    m = folium.Map(
-        location=center or MAP_CENTER,
-        zoom_start=MAP_ZOOM,
-        tiles=MAP_TILES,
-        attr=MAP_ATTR,
-    )
-    Draw(
-        draw_options={
-            "polyline": False, "polygon": True,
-            "rectangle": True, "circle": False,
-            "circlemarker": False, "marker": False,
-        },
-        edit_options={"edit": True},
-    ).add_to(m)
-    return m
+    # --- 背景地図（ラジオボタンで切り替え） ---
+    folium.TileLayer(tiles=MAP_TILES, attr=MAP_ATTR, name="地形図", overlay=False, control=True).add_to(m)
+    folium.TileLayer(tiles=PHOTO_TILES, attr=MAP_ATTR, name="航空写真", overlay=False, control=True, show=False).add_to(m)
 
+    # --- データグループ（チェックボックスでON/OFF切り替え） ---
+    fg_normal = folium.FeatureGroup(name="🟢 通常データ", show=True)
+    fg_alarm  = folium.FeatureGroup(name="🚨 アラームデータ", show=True)
 
-def make_review_map(points: list[dict], polygons: list[dict]):
-    """登録済みデータ確認用マップ（ポイント + ポリゴン表示）"""
-    import folium
+    def add_to_group(row, geom, is_poly=False):
+        is_alarm = row.get("is_alarm", False)
+        target_fg = fg_alarm if is_alarm else fg_normal
+        popup_html = f"<b>{row.get('oaza_name','不明')}</b><br>{row.get('reaction','')}"
+        
+        if not is_poly:
+            color = "red" if is_alarm else "green"
+            icon_name = "exclamation-triangle" if is_alarm else "info-circle"
+            folium.Marker(
+                location=[geom["coordinates"][1], geom["coordinates"][0]],
+                popup=folium.Popup(popup_html, max_width=200),
+                icon=folium.Icon(color=color, icon=icon_name, prefix='fa')
+            ).add_to(target_fg)
+        else:
+            c = "#d00000" if is_alarm else "#2d6a4f"
+            folium.GeoJson(
+                geom, 
+                style_function=lambda x, color=c: {"fillColor":color, "color":color, "weight":2, "fillOpacity":0.4},
+                popup=folium.Popup(popup_html, max_width=200)
+            ).add_to(target_fg)
 
-    m = folium.Map(
-        location=MAP_CENTER,
-        zoom_start=MAP_ZOOM,
-        tiles=MAP_TILES,
-        attr=MAP_ATTR,
-    )
-
+    # 定点とエリアの振り分け
     for row in points:
         geom_raw = row.get("geom")
-        if not geom_raw:
-            continue
+        if not geom_raw: continue
         try:
             geom = json.loads(geom_raw) if isinstance(geom_raw, str) else geom_raw
-            if geom.get("type") == "Point":
-                lon, lat = geom["coordinates"]
-                popup_html = (
-                    f"<b>{row.get('oaza_name','')} {row.get('city_name','')}</b><br>"
-                    f"実施日: {row.get('ActivityDate','')}<br>"
-                    f"資料: {row.get('MaterialType','')}<br>"
-                    f"配布数: {row.get('Quantity',0):,} 部<br>"
-                    f"担当: {row.get('PIC','')}"
-                )
-                folium.Marker(
-                    location=[lat, lon],
-                    popup=folium.Popup(popup_html, max_width=220),
-                    tooltip=row.get("oaza_name", "定点"),
-                    icon=folium.Icon(color="green", icon="map-marker"),
-                ).add_to(m)
-        except Exception:
-            continue
+            if geom and geom.get("type") == "Point": add_to_group(row, geom, is_poly=False)
+        except: continue
 
     for row in polygons:
         geom_raw = row.get("geom")
-        if not geom_raw:
-            continue
+        if not geom_raw: continue
         try:
             geom = json.loads(geom_raw) if isinstance(geom_raw, str) else geom_raw
-            if geom.get("type") in ("Polygon", "MultiPolygon"):
-                popup_html = (
-                    f"<b>{row.get('oaza_name','')} {row.get('city_name','')}</b><br>"
-                    f"実施日: {row.get('ActivityDate','')}<br>"
-                    f"資料: {row.get('MaterialType','')}<br>"
-                    f"配布数: {row.get('Quantity',0):,} 部<br>"
-                    f"担当: {row.get('PIC','')}"
-                )
-                folium.GeoJson(
-                    geom,
-                    style_function=lambda _: {
-                        "fillColor": "#2d6a4f", "color": "#1a472a",
-                        "weight": 2, "fillOpacity": 0.35,
-                    },
-                    popup=folium.Popup(popup_html, max_width=220),
-                    tooltip=row.get("oaza_name", "戸別エリア"),
-                ).add_to(m)
-        except Exception:
-            continue
+            if geom: add_to_group(row, geom, is_poly=True)
+        except: continue
 
+    # グループを地図に追加し、最後にレイヤーコントロールを表示
+    fg_normal.add_to(m)
+    fg_alarm.add_to(m)
+    folium.LayerControl(collapsed=False).add_to(m)
+        
     return m
 
-
 # ============================================================
-# セッション状態の初期化
+# 認証
 # ============================================================
-if "authenticated"  not in st.session_state:
-    st.session_state.authenticated  = False
-if "point_lon"      not in st.session_state:
-    st.session_state.point_lon      = None
-if "point_lat"      not in st.session_state:
-    st.session_state.point_lat      = None
-if "point_city"     not in st.session_state:
-    st.session_state.point_city     = ""
-if "point_oaza"     not in st.session_state:
-    st.session_state.point_oaza     = ""
-if "polygon_geojson" not in st.session_state:
-    st.session_state.polygon_geojson = None
-if "polygon_city"   not in st.session_state:
-    st.session_state.polygon_city   = ""
-if "polygon_oaza"   not in st.session_state:
-    st.session_state.polygon_oaza   = ""
-if "polygon_centroid" not in st.session_state:
-    st.session_state.polygon_centroid = None
-
-
-# ============================================================
-# タイトル
-# ============================================================
-st.markdown('<div class="app-title">🗺 Asu o ｜ 広報活動 データ登録</div>',
-            unsafe_allow_html=True)
-st.markdown(
-    '<div class="app-subtitle">地図上で活動場所を選んで、チラシ配布の記録を登録できます</div>',
-    unsafe_allow_html=True
-)
-
-
-# ============================================================
-# 合言葉認証
-# ============================================================
-PASSPHRASE = "nora"
-
+if "authenticated" not in st.session_state: st.session_state.authenticated = False
 if not st.session_state.authenticated:
-    st.markdown('<div class="login-box">', unsafe_allow_html=True)
-    st.markdown("#### 🔑 合言葉を入力してください")
-    st.caption("このアプリを利用するには合言葉が必要です。")
-    with st.form("login_form"):
-        entered = st.text_input(
-            "合言葉", type="password",
-            placeholder="合言葉を入力",
-            label_visibility="collapsed",
-        )
-        login_btn = st.form_submit_button("確認する", type="primary")
-    if login_btn:
-        if entered == PASSPHRASE:
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("合言葉が違います。もう一度お試しください。")
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-box">#### 🔑 拠点認証</div>', unsafe_allow_html=True)
+    with st.form("login"):
+        pwd = st.text_input("合言葉", type="password")
+        if st.form_submit_button("ログイン"):
+            if pwd in LOCATION_MAP:
+                st.session_state.authenticated = True
+                st.session_state.login_id = pwd
+                st.session_state.map_center = LOCATION_MAP[pwd]
+                st.rerun()
+            else: st.error("認証失敗")
     st.stop()
 
-
 # ============================================================
-# 認証後：メインコンテンツ
+# セッション初期化 & タブ構成
 # ============================================================
-supabase   = get_supabase()
-oaza_list  = load_oaza_bounds(supabase) if supabase else []
+supabase = get_supabase()
+for k in ["p_lon","p_lat","p_city","p_oaza","poly_geo","poly_city","poly_oaza","poly_cen"]:
+    if k not in st.session_state: st.session_state[k] = None if "lon" in k or "lat" in k or "geo" in k or "cen" in k else ""
 
+# --- ここから上書き ---
 MATERIAL_TYPES = ["チラシA", "チラシB", "ポスター", "リーフレット", "その他"]
+tab1, tab2, tab3 = st.tabs(["📌 定点配布", "🏘 戸別配布", "📋 登録履歴"])
 
-tab1, tab2, tab3 = st.tabs([
-    "📌 定点配布の登録",
-    "🏘 戸別配布の登録",
-    "📋 登録済みデータ一覧",
-])
-
-
-# ============================================================
-# タブ1：定点配布（ポイント入力）
-# ============================================================
+# --- タブ1: 定点配布 ---
 with tab1:
-    try:
-        from streamlit_folium import st_folium
-    except ImportError:
-        st.error("streamlit-folium がインストールされていません。requirements.txt を確認してください。")
-        st.stop()
-
-    col_map, col_form = st.columns([3, 2])
-
-    with col_map:
+    from streamlit_folium import st_folium
+    col_m, col_f = st.columns([3, 2])
+    with col_m:
         st.markdown("**① 地図上に定点を置いてください**")
-        st.markdown(
-            '<p class="hint">📍 左上の点マーカーツールを選んで、配布場所をクリックしてください</p>',
-            unsafe_allow_html=True
-        )
-
-        # 地図表示
-        m_point = make_point_map()
-        map_data_p = st_folium(
-            m_point,
-            key="map_point",
-            width=None,
-            height=420,
-            returned_objects=["last_active_drawing"],
-        )
-
-        # 描画結果の取得
-        drawing = map_data_p.get("last_active_drawing")
+        out = st_folium(make_base_map({"marker":True,"polyline":False,"polygon":False,"rectangle":False,"circle":False,"circlemarker":False}), key="map_p", width=None, height=500)
+        drawing = out.get("last_active_drawing")
         if drawing and drawing.get("geometry", {}).get("type") == "Point":
-            coords = drawing["geometry"]["coordinates"]
-            lon, lat = float(coords[0]), float(coords[1])
-
-            if (lon != st.session_state.point_lon or
-                    lat != st.session_state.point_lat):
-                st.session_state.point_lon  = lon
-                st.session_state.point_lat  = lat
-
-                # 大字の逆引き
-                with st.spinner("大字を検索中..."):
-                    city, oaza = find_oaza_by_point(lon, lat, oaza_list)
-                st.session_state.point_city = city
-                st.session_state.point_oaza = oaza
+            lon, lat = drawing["geometry"]["coordinates"]
+            if lon != st.session_state.p_lon:
+                st.session_state.p_lon, st.session_state.p_lat = lon, lat
+                st.session_state.p_city, st.session_state.p_oaza = find_oaza_by_point(lon, lat, supabase)
                 st.rerun()
+    with col_f:
+        if st.session_state.p_lon:
+            st.markdown(f'<div class="geo-badge">📍 {st.session_state.p_city} {st.session_state.p_oaza}</div>', unsafe_allow_html=True)
+            with st.form("f_p", clear_on_submit=True):
+                d = st.date_input("実施日", date.today())
+                material_p = st.selectbox("資料種別", MATERIAL_TYPES, key="mp") # ★復活
+                q = st.number_input("配布数量", 0)
+                p = st.text_input("担当者名")
+                st.markdown("---")
+                resp = st.number_input("応答数", 0); attr = st.text_input("属性")
+                alarm = st.checkbox("🚨 アラーム設定"); react = st.text_area("反応"); memo = st.text_area("備考")
+                submit_p = st.form_submit_button("登録する", type="primary")
+            
+            # ★市町村・大字の手入力項目を復活
+            col_cp, col_op = st.columns(2)
+            with col_cp: city_p_input = st.text_input("市町村名", value=st.session_state.p_city, key="city_p_input")
+            with col_op: oaza_p_input = st.text_input("大字名", value=st.session_state.p_oaza, key="oaza_p_input")
 
-    with col_form:
-        st.markdown("**② 活動内容を入力して登録**")
-
-        # 座標・大字の表示
-        if st.session_state.point_lon is not None:
-            st.markdown(
-                f'<div class="geo-badge">'
-                f'📍 <b>緯度:</b> {st.session_state.point_lat:.6f}<br>'
-                f'📍 <b>経度:</b> {st.session_state.point_lon:.6f}<br>'
-                f'🏙 <b>市町村:</b> {st.session_state.point_city or "（未一致）"}<br>'
-                f'📌 <b>大字:</b> {st.session_state.point_oaza or "（未一致）"}'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-        else:
-            st.info("地図上に定点を置くと、市町村・大字が自動で入力されます。")
-
-        with st.form("form_points", clear_on_submit=True):
-            act_date_p = st.date_input("実施日", value=date.today(), key="dp")
-            material_p = st.selectbox("資料種別", MATERIAL_TYPES, key="mp")
-            quantity_p = st.number_input(
-                "配布数量（部）", min_value=0, max_value=99999,
-                step=1, value=0, key="qp"
-            )
-            pic_p = st.text_input("担当者名", placeholder="例: 山田 太郎", key="pp")
-            submit_p = st.form_submit_button("📌 定点配布を登録する", type="primary")
-
-        # ---- 市町村名・大字名はフォームの外で管理（form内ではvalue反映されないため）----
-        col_cp, col_op = st.columns(2)
-        with col_cp:
-            city_p_input = st.text_input(
-                "市町村名",
-                value=st.session_state.point_city,
-                placeholder="例: 大津市",
-                key="city_p_input",
-                help="字界データから自動取得。未取得時は手入力してください。",
-            )
-        with col_op:
-            oaza_p_input = st.text_input(
-                "大字名",
-                value=st.session_state.point_oaza,
-                placeholder="例: 唐崎",
-                key="oaza_p_input",
-                help="字界データから自動取得。未取得時は手入力してください。",
-            )
-
-        if submit_p:
-            errors = []
-            if st.session_state.point_lon is None:
-                errors.append("地図上に定点を置いてください。")
-            if not pic_p.strip():
-                errors.append("担当者名を入力してください。")
-            if quantity_p <= 0:
-                errors.append("配布数量は1以上を入力してください。")
-
-            if errors:
-                for e in errors:
-                    st.warning(e)
-            elif supabase is None:
-                st.error("データベースに接続できません。")
-            else:
-                geojson_str = json.dumps({
-                    "type": "Point",
-                    "coordinates": [
-                        st.session_state.point_lon,
-                        st.session_state.point_lat
-                    ]
-                })
-                # 手入力値を優先、なければ自動取得値を使用
-                final_city_p = city_p_input.strip() or st.session_state.point_city
-                final_oaza_p = oaza_p_input.strip() or st.session_state.point_oaza
+            if submit_p:
                 payload = {
-                    "ActivityDate": act_date_p.isoformat(),
-                    "MaterialType": material_p,
-                    "Quantity":     int(quantity_p),
-                    "PIC":          pic_p.strip(),
-                    "geom":         geojson_str,
-                    "city_name":    final_city_p,
-                    "oaza_name":    final_oaza_p,
+                    "ActivityDate": d.isoformat(), 
+                    "MaterialType": material_p, # ★追加
+                    "Quantity": q, "PIC": p, "is_alarm": alarm,
+                    "geom": json.dumps({"type":"Point","coordinates":[st.session_state.p_lon, st.session_state.p_lat]}),
+                    "city_name": city_p_input.strip() or st.session_state.p_city, # ★手入力を優先
+                    "oaza_name": oaza_p_input.strip() or st.session_state.p_oaza, # ★手入力を優先
+                    "response_count": resp, "target_attribute": attr, "reaction": react, "remarks": memo, "login_id": st.session_state.login_id
                 }
-                try:
-                    res = supabase.table("pr_points").insert(payload).execute()
-                    if res.data:
-                        st.success("✅ 定点配布を登録しました！")
-                        st.markdown(
-                            f'<div class="success-card">'
-                            f'<b>実施日:</b> {act_date_p.strftime("%Y年%m月%d日")}<br>'
-                            f'<b>資料種別:</b> {material_p}<br>'
-                            f'<b>配布数量:</b> {quantity_p:,} 部<br>'
-                            f'<b>担当者名:</b> {pic_p.strip()}<br>'
-                            f'<b>市町村:</b> {final_city_p or "―"}<br>'
-                            f'<b>大字:</b> {final_oaza_p or "―"}'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                        # 座標リセット
-                        st.session_state.point_lon  = None
-                        st.session_state.point_lat  = None
-                        st.session_state.point_city = ""
-                        st.session_state.point_oaza = ""
-                    else:
-                        st.error("登録に失敗しました。")
-                except Exception as e:
-                    st.error(f"登録エラー: {e}")
+                supabase.table("pr_points").insert(payload).execute()
+                st.success("登録完了！"); st.session_state.p_lon = None; st.rerun()
 
-
-# ============================================================
-# タブ2：戸別配布（ポリゴン入力）
-# ============================================================
+# --- タブ2: 戸別配布 ---
 with tab2:
-    try:
-        from streamlit_folium import st_folium
-    except ImportError:
-        st.error("streamlit-folium がインストールされていません。")
-        st.stop()
+    col_m2, col_f2 = st.columns([3, 2])
+    with col_m2:
+        st.markdown("**① 配布エリアを描いてください**")
+        out_a = st_folium(make_base_map({"marker":False,"polyline":False,"polygon":True,"rectangle":True,"circle":False,"circlemarker":False}), key="map_a", width=None, height=500)
+        drawing_a = out_a.get("last_active_drawing")
+        if drawing_a and drawing_a.get("geometry", {}).get("type") in ("Polygon", "Rectangle"):
+            geo = drawing_a["geometry"]
+            if geo != st.session_state.poly_geo:
+                st.session_state.poly_geo = geo
+                cen = calc_centroid(geo)
+                st.session_state.poly_cen = cen
+                if cen:
+                    st.session_state.poly_city, st.session_state.poly_oaza = find_oaza_by_point(cen[0], cen[1], supabase)
+                st.rerun()
+    with col_f2:
+        if st.session_state.poly_geo:
+            st.markdown(f'<div class="geo-badge">🏘 重心: {st.session_state.poly_city} {st.session_state.poly_oaza}</div>', unsafe_allow_html=True)
+            with st.form("f_a", clear_on_submit=True):
+                d = st.date_input("実施日", date.today(), key="da")
+                material_a = st.selectbox("資料種別", MATERIAL_TYPES, key="ma") # ★復活
+                q = st.number_input("配布数量", 0, key="qa")
+                p = st.text_input("担当者名", key="pa")
+                st.markdown("---")
+                resp = st.number_input("応答数", 0, key="ra"); attr = st.text_input("属性", key="aa")
+                alarm = st.checkbox("🚨 アラーム（要注意エリア）", key="ala")
+                react = st.text_area("反応", key="rea"); memo = st.text_area("備考", key="mea")
+                submit_a = st.form_submit_button("登録する", type="primary")
 
-    col_map2, col_form2 = st.columns([3, 2])
+            # ★市町村・大字の手入力項目を復活
+            col_ca, col_oa = st.columns(2)
+            with col_ca: city_a_input = st.text_input("市町村名", value=st.session_state.poly_city, key="city_a_input")
+            with col_oa: oaza_a_input = st.text_input("大字名", value=st.session_state.poly_oaza, key="oaza_a_input")
 
-    with col_map2:
-        st.markdown("**① 配布エリアを地図上に描いてください**")
-        st.markdown(
-            '<p class="hint">🖊 左上の多角形ツールで配布エリアの外周をなぞってください</p>',
-            unsafe_allow_html=True
-        )
-
-        m_poly = make_polygon_map()
-        map_data_a = st_folium(
-            m_poly,
-            key="map_poly",
-            width=None,
-            height=420,
-            returned_objects=["last_active_drawing"],
-        )
-
-        drawing_a = map_data_a.get("last_active_drawing")
-        if drawing_a:
-            geom_type = drawing_a.get("geometry", {}).get("type", "")
-            if geom_type in ("Polygon", "Rectangle"):
-                geojson_dict = drawing_a.get("geometry")
-
-                if geojson_dict != st.session_state.polygon_geojson:
-                    st.session_state.polygon_geojson = geojson_dict
-
-                    # 重心計算
-                    centroid = calc_centroid(geojson_dict)
-                    st.session_state.polygon_centroid = centroid
-
-                    if centroid:
-                        clon, clat = centroid
-                        with st.spinner("大字を検索中..."):
-                            city, oaza = find_oaza_by_point(clon, clat, oaza_list)
-                        st.session_state.polygon_city = city
-                        st.session_state.polygon_oaza = oaza
-                    else:
-                        st.session_state.polygon_city = ""
-                        st.session_state.polygon_oaza = ""
-                    st.rerun()
-
-    with col_form2:
-        st.markdown("**② 活動内容を入力して登録**")
-
-        if st.session_state.polygon_geojson:
-            centroid = st.session_state.polygon_centroid
-            if centroid:
-                clon, clat = centroid
-                st.markdown(
-                    f'<div class="geo-badge">'
-                    f'🔵 <b>重心 緯度:</b> {clat:.6f}<br>'
-                    f'🔵 <b>重心 経度:</b> {clon:.6f}<br>'
-                    f'🏙 <b>市町村:</b> {st.session_state.polygon_city or "（未一致）"}<br>'
-                    f'📌 <b>大字:</b> {st.session_state.polygon_oaza or "（未一致）"}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-        else:
-            st.info("地図上にエリアを描くと、重心から市町村・大字が自動で入力されます。")
-
-        with st.form("form_areas", clear_on_submit=True):
-            act_date_a = st.date_input("実施日", value=date.today(), key="da")
-            material_a = st.selectbox("資料種別", MATERIAL_TYPES, key="ma")
-            quantity_a = st.number_input(
-                "配布数量（部）", min_value=0, max_value=99999,
-                step=1, value=0, key="qa"
-            )
-            pic_a = st.text_input("担当者名", placeholder="例: 鈴木 花子", key="pa")
-            submit_a = st.form_submit_button("🏘 戸別配布を登録する", type="primary")
-
-        # ---- 市町村名・大字名はフォームの外で管理（form内ではvalue反映されないため）----
-        col_ca, col_oa = st.columns(2)
-        with col_ca:
-            city_a_input = st.text_input(
-                "市町村名",
-                value=st.session_state.polygon_city,
-                placeholder="例: 大津市",
-                key="city_a_input",
-                help="字界データから自動取得。未取得時は手入力してください。",
-            )
-        with col_oa:
-            oaza_a_input = st.text_input(
-                "大字名",
-                value=st.session_state.polygon_oaza,
-                placeholder="例: 唐崎",
-                key="oaza_a_input",
-                help="字界データから自動取得。未取得時は手入力してください。",
-            )
-
-        if submit_a:
-            errors = []
-            if not st.session_state.polygon_geojson:
-                errors.append("地図上にポリゴンを描いてください。")
-            if not pic_a.strip():
-                errors.append("担当者名を入力してください。")
-            if quantity_a <= 0:
-                errors.append("配布数量は1以上を入力してください。")
-
-            if errors:
-                for e in errors:
-                    st.warning(e)
-            elif supabase is None:
-                st.error("データベースに接続できません。")
-            else:
-                centroid     = st.session_state.polygon_centroid
-                centroid_str = None
-                if centroid:
-                    clon, clat = centroid
-                    centroid_str = json.dumps({
-                        "type": "Point",
-                        "coordinates": [clon, clat]
-                    })
-
-                # 手入力値を優先、なければ自動取得値を使用
-                final_city_a = city_a_input.strip() or st.session_state.polygon_city
-                final_oaza_a = oaza_a_input.strip() or st.session_state.polygon_oaza
+            if submit_a:
                 payload = {
-                    "ActivityDate":  act_date_a.isoformat(),
-                    "MaterialType":  material_a,
-                    "Quantity":      int(quantity_a),
-                    "PIC":           pic_a.strip(),
-                    "geom":          json.dumps(st.session_state.polygon_geojson),
-                    "centroid":      centroid_str,
-                    "city_name":     final_city_a,
-                    "oaza_name":     final_oaza_a,
+                    "ActivityDate": d.isoformat(), 
+                    "MaterialType": material_a, # ★追加
+                    "Quantity": q, "PIC": p, "is_alarm": alarm,
+                    "geom": json.dumps(st.session_state.poly_geo), 
+                    "city_name": city_a_input.strip() or st.session_state.poly_city, # ★手入力を優先
+                    "oaza_name": oaza_a_input.strip() or st.session_state.poly_oaza, # ★手入力を優先
+                    "response_count": resp, "target_attribute": attr, "reaction": react, "remarks": memo, "login_id": st.session_state.login_id
                 }
-                try:
-                    res = supabase.table("pr_areas").insert(payload).execute()
-                    if res.data:
-                        st.success("✅ 戸別配布を登録しました！")
-                        st.markdown(
-                            f'<div class="success-card">'
-                            f'<b>実施日:</b> {act_date_a.strftime("%Y年%m月%d日")}<br>'
-                            f'<b>資料種別:</b> {material_a}<br>'
-                            f'<b>配布数量:</b> {quantity_a:,} 部<br>'
-                            f'<b>担当者名:</b> {pic_a.strip()}<br>'
-                            f'<b>市町村:</b> {final_city_a or "―"}<br>'
-                            f'<b>大字:</b> {final_oaza_a or "―"}'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                        # ポリゴンリセット
-                        st.session_state.polygon_geojson  = None
-                        st.session_state.polygon_centroid = None
-                        st.session_state.polygon_city     = ""
-                        st.session_state.polygon_oaza     = ""
-                    else:
-                        st.error("登録に失敗しました。")
-                except Exception as e:
-                    st.error(f"登録エラー: {e}")
+                supabase.table("pr_areas").insert(payload).execute()
+                st.success("エリア登録完了！"); st.session_state.poly_geo = None; st.rerun()
 
-
-# ============================================================
-# タブ3：登録済みデータ一覧（地図表示付き）
-# ============================================================
+# --- タブ3: ダッシュボード ＆ 登録履歴 ---
 with tab3:
     import pandas as pd
     from streamlit_folium import st_folium
+    
+    st.markdown("##### 📊 活動分析ダッシュボード")
 
-    st.markdown("##### 登録済みデータの確認")
+    def show_df(data, title):
+        if not data: return
+        df = pd.DataFrame(data).drop(columns=["geom", "id", "centroid"], errors="ignore")
+        df = df.rename(columns={
+            "ActivityDate":"日付", "MaterialType":"資料", "Quantity":"数", 
+            "PIC":"担当", "city_name":"市町村", "oaza_name":"大字", 
+            "response_count":"応答", "target_attribute":"属性", 
+            "reaction":"反応", "remarks":"備考", "is_alarm":"🚨", "login_id":"ログインID"
+        })
+        st.write(f"**{title}**")
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # --- フィルター ---
-    col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 1])
-    with col_f1:
-        d_from_t3 = st.date_input("開始日", value=None, key="t3_from",
-                                   label_visibility="collapsed")
-    with col_f2:
-        pic_t3 = st.text_input("担当者名で絞込み", placeholder="担当者名（空白で全件）",
-                                key="t3_pic")
-    with col_f3:
-        oaza_t3 = st.text_input("大字名で絞込み", placeholder="大字名（空白で全件）",
-                                 key="t3_oaza")
-    with col_f4:
-        load_t3 = st.button("🔍 表示", key="t3_load", type="primary")
+    pts_raw = supabase.table("pr_points").select("*").order("ActivityDate", desc=True).execute().data or []
+    ars_raw = supabase.table("pr_areas").select("*").order("ActivityDate", desc=True).execute().data or []
 
-    if load_t3:
-        if supabase is None:
-            st.error("DB接続エラー")
-        else:
-            # 定点・戸別を両方取得
-            def fetch_table(table: str) -> list[dict]:
-                q = (supabase.table(table)
-                     .select("ActivityDate, MaterialType, Quantity, PIC, "
-                             "city_name, oaza_name, geom, created_at")
-                     .order("ActivityDate", desc=True)
-                     .limit(300))
-                if d_from_t3:
-                    q = q.gte("ActivityDate", d_from_t3.isoformat())
-                if pic_t3.strip():
-                    q = q.ilike("PIC", f"%{pic_t3.strip()}%")
-                if oaza_t3.strip():
-                    q = q.ilike("oaza_name", f"%{oaza_t3.strip()}%")
-                try:
-                    return q.execute().data or []
-                except Exception as e:
-                    st.error(f"{table} 取得エラー: {e}")
-                    return []
+    df_pts = pd.DataFrame(pts_raw); df_ars = pd.DataFrame(ars_raw)
+    df_all = pd.concat([df_pts, df_ars], ignore_index=True) if not (df_pts.empty and df_ars.empty) else pd.DataFrame()
 
-            pts_data  = fetch_table("pr_points")
-            poly_data = fetch_table("pr_areas")
+    if not df_all.empty:
+        df_all['Quantity'] = pd.to_numeric(df_all['Quantity'], errors='coerce').fillna(0)
+        df_all['response_count'] = pd.to_numeric(df_all['response_count'], errors='coerce').fillna(0)
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("総配布数", f"{df_all['Quantity'].sum():,.0f} 部")
+        c2.metric("総応答数", f"{df_all['response_count'].sum():,.0f} 件")
+        c3.metric("🚨 アラーム", f"{df_all.get('is_alarm', pd.Series([False])).sum()} 件")
+        st.markdown("---")
 
-            # --- 地図表示 ---
-            st.markdown("**登録済みデータの地図表示**")
-            st.caption("緑のピン：定点配布　緑のポリゴン：戸別配布　（クリックで詳細表示）")
+    # ============================================================
+    # 🌟 修正ポイント：外部スイッチを廃止し、全データをネイティブマップへ渡す
+    # ============================================================
+    st.markdown("**🗺️ 活動・アラームマップ**")
+    st.caption("💡 地図右上のメニューから「背景（地形図/航空写真）」と「表示データ」を切り替えられます。")
+    
+    # returned_objects=[] を指定し、クリックによる裏側の再通信をカット（超安定化）
+    st_folium(
+        make_review_map(pts_raw, ars_raw), 
+        key="map_review_v12", 
+        width=None, 
+        height=500,
+        returned_objects=[] 
+    )
 
-            review_map = make_review_map(pts_data, poly_data)
-            st_folium(review_map, key="map_review", width=None, height=460,
-                      returned_objects=[])
-
-            # --- テーブル表示 ---
-            sub1, sub2 = st.tabs(["📌 定点配布", "🏘 戸別配布"])
-
-            def show_table(data: list[dict]):
-                if not data:
-                    st.info("該当データがありません。")
-                    return
-                df = pd.DataFrame(data).rename(columns={
-                    "ActivityDate": "実施日",
-                    "MaterialType": "資料種別",
-                    "Quantity":     "配布数量",
-                    "PIC":          "担当者名",
-                    "city_name":    "市町村",
-                    "oaza_name":    "大字",
-                    "created_at":   "登録日時",
-                }).drop(columns=["geom"], errors="ignore")
-
-                total = int(df["配布数量"].sum())
-                st.caption(f"**{len(df)} 件 ／ 合計 {total:,} 部**")
-                st.dataframe(
-                    df, use_container_width=True, hide_index=True,
-                    column_config={
-                        "配布数量": st.column_config.NumberColumn(format="%d 部"),
-                        "登録日時": st.column_config.DatetimeColumn(
-                            format="YYYY/MM/DD HH:mm"),
-                    }
-                )
-
-            with sub1:
-                show_table(pts_data)
-            with sub2:
-                show_table(poly_data)
+    if not df_all.empty:
+        with st.expander("📋 登録データの詳細一覧を表示"):
+            show_df(pts_raw, "📌 定点配布")
+            show_df(ars_raw, "🏘 戸別配布")
     else:
-        st.info("絞り込み条件を設定して「表示」ボタンを押してください。")
+        st.info("データがまだ登録されていません。")
 
-
-# ============================================================
-# フッター
-# ============================================================
+# --- フッター ---
 st.divider()
-col1, col2, col3 = st.columns([3, 1, 3])
-with col2:
+col_l, col_c, col_r = st.columns([3, 1, 3])
+with col_c:
     if st.button("ログアウト"):
-        for key in ["authenticated", "point_lon", "point_lat",
-                    "point_city", "point_oaza",
-                    "polygon_geojson", "polygon_city",
-                    "polygon_oaza", "polygon_centroid"]:
-            st.session_state[key] = False if key == "authenticated" else None \
-                if "lon" in key or "lat" in key or "geojson" in key \
-                or "centroid" in key else ""
-        st.rerun()
+        st.session_state.clear(); st.rerun()
