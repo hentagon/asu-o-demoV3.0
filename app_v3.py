@@ -179,7 +179,11 @@ for k in ["p_lon","p_lat","p_city","p_oaza","poly_geo","poly_city","poly_oaza","
 
 # --- ここから上書き ---
 MATERIAL_TYPES = ["チラシA", "チラシB", "ポスター", "リーフレット", "その他"]
-tab1, tab2, tab3 = st.tabs(["📌 定点配布", "🏘 戸別配布", "📋 登録履歴"])
+# --- 修正前 ---
+#tab1, tab2, tab3 = st.tabs(["📌 定点配布", "🏘 戸別配布", "📋 登録履歴"])
+
+# --- 修正後（tab4 を追加） ---
+tab1, tab2, tab3, tab4 = st.tabs(["📌 定点配布", "🏘 戸別配布", "📊 ダッシュボード", "🗑️ データ管理"])
 
 # --- タブ1: 定点配布 ---
 with tab1:
@@ -330,6 +334,46 @@ with tab3:
             show_df(ars_raw, "🏘 戸別配布")
     else:
         st.info("データがまだ登録されていません。")
+# --- タブ4: データ管理（削除機能） ---
+with tab4:
+    st.markdown("##### 🗑️ 登録データの削除")
+    st.warning("⚠️ 一度削除したデータは元に戻せません。登録内容をよく確認してから実行してください。")
+
+    col_del1, col_del2 = st.columns(2)
+
+    # 📌 定点データの削除セクション
+    with col_del1:
+        st.markdown("**📌 定点データの削除**")
+        pts_del = supabase.table("pr_points").select("id, ActivityDate, oaza_name, PIC").order("id", desc=True).execute().data
+        if pts_del:
+            # 選択肢のリストを作成（IDを裏側のキーにする）
+            pt_dict = {f"ID:{p['id']} | {p['ActivityDate']} | {p['oaza_name']} (担当:{p['PIC']})": p['id'] for p in pts_del}
+            del_pt_sel = st.selectbox("削除する定点データを選択", ["選択してください"] + list(pt_dict.keys()), key="del_pt")
+            
+            if del_pt_sel != "選択してください":
+                if st.button("🚨 この定点データを削除する", type="primary", use_container_width=True):
+                    # Supabaseから該当IDのデータを削除
+                    supabase.table("pr_points").delete().eq("id", pt_dict[del_pt_sel]).execute()
+                    st.success(f"データを削除しました！")
+                    st.rerun() # 画面を再読み込みして最新状態にする
+        else:
+            st.info("削除できる定点データはありません。")
+
+    # 🏘 戸別データの削除セクション
+    with col_del2:
+        st.markdown("**🏘 戸別データの削除**")
+        ars_del = supabase.table("pr_areas").select("id, ActivityDate, oaza_name, PIC").order("id", desc=True).execute().data
+        if ars_del:
+            ar_dict = {f"ID:{p['id']} | {p['ActivityDate']} | {p['oaza_name']} (担当:{p['PIC']})": p['id'] for p in ars_del}
+            del_ar_sel = st.selectbox("削除する戸別データを選択", ["選択してください"] + list(ar_dict.keys()), key="del_ar")
+            
+            if del_ar_sel != "選択してください":
+                if st.button("🚨 この戸別データを削除する", type="primary", use_container_width=True):
+                    supabase.table("pr_areas").delete().eq("id", ar_dict[del_ar_sel]).execute()
+                    st.success(f"データを削除しました！")
+                    st.rerun()
+        else:
+            st.info("削除できる戸別データはありません。")
 
 # --- フッター ---
 st.divider()
